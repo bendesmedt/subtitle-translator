@@ -38,6 +38,8 @@ self-hosted LibreTranslate instance. Deployed with Docker Compose (see README.md
 - Translated files are written with `write_output` only. It never overwrites unless `overwrite=True`.
 - The app listens on port 8790 (Dockerfile, compose, README); plain HTTP on the LAN, so `COOKIE_SECURE`
   defaults to false and nothing may assume the host is `localhost`.
+- Host-specific deployment values (media path, PUID/PGID, port, proxy settings) come from the gitignored
+  `.env` (documented in `.env.example`); keep `docker-compose.yml` free of per-server edits.
 - Run one uvicorn worker: sessions, rate limits and jobs live in memory.
 - Dependencies: runtime deps in `requirements.in`, compiled with hashes into `requirements.txt` for
   Python 3.12 (`pip-compile --generate-hashes`, run inside `python:3.12-slim`). Ask before adding any.

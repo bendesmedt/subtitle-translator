@@ -2,6 +2,7 @@
 config/
 .env
 *.env
+!.env.example
 
 # Python
 .venv/

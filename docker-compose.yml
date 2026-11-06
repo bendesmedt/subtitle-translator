@@ -4,26 +4,19 @@ services:
     image: subtitle-translator:latest
     container_name: subtitle-translator
     restart: unless-stopped
-    # Run as the owner of your media files (find them with `id` on the host).
+    # Host-specific values live in .env (copy .env.example). Don't edit this file on
+    # the server, so updates stay a plain `git pull && docker compose up -d --build`.
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
-      # Set to "true" when the app is served over HTTPS (reverse proxy).
-      COOKIE_SECURE: "false"
-      # IP of your reverse proxy as seen by the container, so login rate limiting
-      # sees real client IPs. Leave as-is when not using a proxy.
-      FORWARDED_ALLOW_IPS: "127.0.0.1"
-      # Optional, comma-separated extra origins allowed for API calls,
-      # e.g. "https://subs.example.com" if your proxy rewrites the Host header.
-      # ALLOWED_ORIGINS: ""
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
     volumes:
       - ./config:/config
-      # CHANGE THIS: host folder with your movies/series, mounted at /media.
-      - /path/to/your/media:/media
+      - "${MEDIA_PATH:?Set MEDIA_PATH in .env (see .env.example)}:/media"
     ports:
-      # Reachable on all server interfaces: http://SERVER_IP:8790 from your LAN.
-      # Plain HTTP: never port-forward this to the internet. To listen on one
-      # interface only, prefix the server's LAN IP, e.g. "192.168.1.10:8790:8790".
-      - "8790:8790"
+      # Plain HTTP: never port-forward this to the internet.
+      - "${HOST_PORT:-8790}:8790"
     read_only: true
     tmpfs:
       - /tmp
@@ -35,7 +28,7 @@ services:
       - default
       - translate
 
-  # Optional: bundled LibreTranslate. Enable it by adding COMPOSE_PROFILES=libretranslate to .env
+  # Optional: bundled LibreTranslate. Enable it with COMPOSE_PROFILES=libretranslate in .env
   # and use http://libretranslate:5000 as the URL in the setup wizard.
   libretranslate:
     image: libretranslate/libretranslate:latest
@@ -43,8 +36,7 @@ services:
     profiles: ["libretranslate"]
     restart: unless-stopped
     environment:
-      # Limit the models downloaded on first start (comma-separated codes).
-      LT_LOAD_ONLY: "en,fr,de,es,nl"
+      LT_LOAD_ONLY: "${LT_LOAD_ONLY:-en,fr,de,es,nl}"
     volumes:
       - libretranslate-models:/home/libretranslate/.local
     networks:

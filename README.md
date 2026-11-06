@@ -27,29 +27,25 @@ git clone https://github.com/bendesmedt/subtitle-translator
 cd subtitle-translator
 ```
 
-### 3. Configure `docker-compose.yml`
+### 3. Configure `.env`
 
-**Media folder** — replace the placeholder with the host folder that contains your movies/series:
-
-```yaml
-    volumes:
-      - ./config:/config
-      - /path/to/your/media:/media     # e.g. /srv/media:/media
-```
-
-**User/group** — the container runs as the user that owns your media, so it can write translated files
-next to the originals. Find the IDs of that user on the host:
+All server-specific settings live in `.env`, which git ignores. Never edit `docker-compose.yml` on the
+server; that keeps updates a plain `git pull`.
 
 ```sh
-id            # e.g. uid=1000(you) gid=1000(you) ...
+cp .env.example .env
+nano .env        # or any editor
 ```
 
-Put them in a `.env` file next to `docker-compose.yml` (defaults are 1000:1000):
+Set at least:
 
-```sh
-echo "PUID=$(id -u)" > .env
-echo "PGID=$(id -g)" >> .env
-```
+- **`MEDIA_PATH`** (required) — host folder with your movies/series, e.g. `/srv/media`. It is mounted
+  at `/media` in the container. `docker compose` refuses to start while this is unset.
+- **`PUID` / `PGID`** — the user that owns your media, so the app can write translated files next to the
+  originals. Find them with `id` (e.g. `uid=1000(you) gid=1000(you)`); the default is 1000/1000.
+- **`HOST_PORT`** — defaults to `8790`. Use `192.168.1.10:8790` to listen on one interface only.
+
+Every variable is explained in `.env.example`.
 
 Create the config folder yourself so it is owned by that user (otherwise Docker creates it as root and the
 app cannot save its settings):
@@ -58,16 +54,10 @@ app cannot save its settings):
 mkdir -p config
 ```
 
-**Bundled LibreTranslate (optional)** — if you don't run LibreTranslate yet, the compose file contains an
-optional `libretranslate` service. Edit `LT_LOAD_ONLY` to the language codes you need (fewer languages =
-less disk and RAM), and enable it by adding its profile to `.env`:
-
-```sh
-echo "COMPOSE_PROFILES=libretranslate" >> .env
-```
-
-All `docker compose` commands below then include it automatically. It is only reachable from the app
-container; in the wizard you use `http://libretranslate:5000`.
+**Bundled LibreTranslate (optional)** — if you don't run LibreTranslate yet, uncomment
+`COMPOSE_PROFILES=libretranslate` in `.env` and set `LT_LOAD_ONLY` to the language codes you need (fewer
+languages = less disk and RAM). All `docker compose` commands then include it automatically. It is only
+reachable from the app container; in the wizard you use `http://libretranslate:5000`.
 
 ### 4. Start
 
@@ -90,7 +80,7 @@ The token changes on every restart until setup is completed.
 
 ### 6. Open the app
 
-The app listens on port **8790** on all of the server's network interfaces. Find the server's LAN IP
+By default the app listens on port **8790** on all of the server's network interfaces. Find the server's LAN IP
 (on the server):
 
 ```sh
@@ -102,8 +92,8 @@ and browse from any device on your network to `http://SERVER_IP:8790`, e.g. <htt
 **Firewall:** Docker publishes ports through its own iptables rules, which are evaluated *before* `ufw`, so
 a `ufw` rule is normally not needed (and `ufw deny` does not block it). If your server filters traffic in
 another way (e.g. firewalld zones or rules in Docker's `DOCKER-USER` chain), allow TCP port 8790 from your
-LAN. To make the app listen on the LAN interface only, change the port line in `docker-compose.yml` to
-`"192.168.1.10:8790:8790"` (your server's IP).
+LAN. To make the app listen on the LAN interface only, set `HOST_PORT=192.168.1.10:8790` (your server's
+IP) in `.env`.
 
 > **Security note:** on the LAN, traffic (including your password) is plain HTTP and unencrypted. That is
 > fine on a trusted home network, but **do not port-forward 8790 to the internet**. For remote or encrypted
@@ -132,12 +122,12 @@ subs.example.com {
 }
 ```
 
-Then set in `docker-compose.yml`:
+Then set in `.env`:
 
-```yaml
-    environment:
-      COOKIE_SECURE: "true"          # session cookie is only sent over HTTPS
-      FORWARDED_ALLOW_IPS: "172.16.0.0/12"   # see below
+```sh
+COOKIE_SECURE=true                # session cookie is only sent over HTTPS
+FORWARDED_ALLOW_IPS=172.18.0.1    # gateway IP of the app network, see below
+HOST_PORT=127.0.0.1:8790          # optional: only the proxy can reach the app
 ```
 
 `FORWARDED_ALLOW_IPS` must contain the IP your proxy has *as seen by the container*, so the app trusts the
@@ -146,10 +136,9 @@ the Docker bridge gateway (find it with
 `docker network inspect subtitle-translator_default --format '{{(index .IPAM.Config 0).Gateway}}'`). A
 proxy running as a container on the same network has its container IP. Never use `*`.
 
-If your proxy rewrites the `Host` header, also set `ALLOWED_ORIGINS: "https://subs.example.com"`.
+If your proxy rewrites the `Host` header, also set `ALLOWED_ORIGINS=https://subs.example.com`.
 
-Apply the changes with `docker compose up -d`. With a proxy in front, you can stop exposing 8790 to the
-LAN by changing the port line to `"127.0.0.1:8790:8790"`.
+Apply the changes with `docker compose up -d`.
 
 ## Updating
 
@@ -159,7 +148,25 @@ git pull
 docker compose up -d --build
 ```
 
-Your settings and account live in `./config` and are kept.
+Your settings and account (`./config`) and your `.env` are kept.
+
+### Migrating from the first version
+
+The first version had the media path written directly in `docker-compose.yml`. If you edited that file on
+the server, `git pull` will refuse to overwrite it. Once, before pulling:
+
+```sh
+cd subtitle-translator
+grep ":/media" docker-compose.yml      # note your media path
+git checkout -- docker-compose.yml     # discard the local edit
+git pull
+cp -n .env.example .env                # keeps an existing .env
+nano .env                              # set MEDIA_PATH (and PUID/PGID, COMPOSE_PROFILES, ...)
+docker compose up -d --build
+```
+
+If you had also changed `COOKIE_SECURE`, `FORWARDED_ALLOW_IPS` or `LT_LOAD_ONLY` in the compose file, put
+those values in `.env` too.
 
 ## Reset setup / forgotten password
 
