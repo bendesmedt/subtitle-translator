@@ -113,26 +113,31 @@ def test_rewrap_balanced():
     assert rewrap("a b c", 3).count("\\N") == 2
 
 
-def test_tag_protection_roundtrip():
+def test_tags_never_sent_to_translator():
     cue = prepare_cue("{\\an8}<i>Hello</i> big\\Nworld")
-    assert len(cue.units) == 1
-    unit = cue.units[0]
-    assert unit.lead == "{\\an8}<i>"
-    assert "[[0]]" in unit.body and "<" not in unit.body
-    rebuilt = cue.rebuild([unit.body.replace("Hello", "Bonjour")])
-    assert rebuilt.startswith("{\\an8}<i>Bonjour</i>")
-    assert rebuilt.count("\\N") == 1
+    queries = [seg.query for seg in cue.segments]
+    assert queries == ["Hello", "big", "world"]
+    rebuilt = cue.rebuild(["Bonjour", "grand", "monde"])
+    assert rebuilt == "{\\an8}<i>Bonjour</i> grand\\Nmonde"
 
 
-def test_missing_placeholders_are_appended():
+def test_mid_line_tags_restored_exactly():
     cue = prepare_cue("A <b>bold</b> word")
-    rebuilt = cue.rebuild(["Un mot gras"])
-    assert rebuilt == "Un mot gras<b></b>"
+    assert [seg.query for seg in cue.segments] == ["A", "bold", "word"]
+    assert cue.rebuild(["Un", "gras", "mot"]) == "Un <b>gras</b> mot"
 
 
 def test_dialogue_lines_translated_separately():
     cue = prepare_cue("- Are you coming?\\N- Yes.")
-    assert [u.body for u in cue.units] == ["- Are you coming?", "- Yes."]
+    assert [seg.query for seg in cue.segments] == ["Are you coming?", "Yes."]
+    assert cue.rebuild(["Tu viens ?", "Oui."]) == "- Tu viens ?\\N- Oui."
+
+
+def test_continuation_lines_joined_and_rewrapped():
+    cue = prepare_cue("<i>I never thought that we\\Nwould meet again here</i>")
+    assert [seg.query for seg in cue.segments] == ["I never thought that we would meet again here"]
+    out = cue.rebuild(["Je n'ai jamais pensé qu'on se reverrait ici"])
+    assert out.startswith("<i>") and out.endswith("</i>") and out.count("\\N") == 1
 
 
 @pytest.mark.parametrize(("fmt", "text"), [("srt", SRT), ("vtt", VTT), ("ass", ASS), ("microdvd", MICRODVD)])
@@ -143,26 +148,26 @@ async def test_roundtrip_preserves_timing(fmt, text):
     out = dump_subtitles(subs, fmt)
     again = load_subtitles(out, fmt, 23.976)
     assert _times(again) == before
-    assert "<<" in out.decode()
+    assert "<<" in out.decode("utf-8-sig")
 
 
 async def test_srt_tags_and_lines_preserved():
     subs = load_subtitles(SRT.encode(), "srt", 25)
     await translate_subtitles(subs, fake_translate)
-    out = dump_subtitles(subs, "srt").decode()
-    assert "<i><<Hello" in out
-    assert '<font color="#ff0000">' in out and "<b>" in out
-    assert "{\\an8}" in out
-    first_cue = out.split("\n\n")[0].splitlines()
+    out = dump_subtitles(subs, "srt").decode("utf-8-sig")
+    assert "<i><<Hello>></i> <<there,>>" in out
+    assert '<b><<Bye>></b> <font color="#ff0000"><<now>></font>' in out
+    assert "{\\an8}<<Top line>>" in out
+    first_cue = out.lstrip("\ufeff").split("\n\n")[0].splitlines()
     assert len(first_cue) == 4  # index, timing, two text lines
-    assert "<<- Are you coming?>>" in out and "<<- Yes.>>" in out
+    assert "- <<Are you coming?>>" in out and "- <<Yes.>>" in out
 
 
 async def test_ass_skips_comments_and_drawings():
     subs = load_subtitles(ASS.encode(), "ass", 25)
     result = await translate_subtitles(subs, fake_translate)
     assert result.cues_translated == 2
-    out = dump_subtitles(subs, "ass").decode()
+    out = dump_subtitles(subs, "ass").decode("utf-8-sig")
     assert "do not translate" in out and "<<do not translate>>" not in out
     assert "{\\p1}m 0 0 l 100 0 100 100{\\p0}" in out
     assert "{\\pos(10,20)}<<Positioned>>" in out
@@ -172,7 +177,7 @@ async def test_ass_skips_comments_and_drawings():
 def test_microdvd_without_fps_uses_default():
     subs = load_subtitles(b"{25}{50}Hello\n", "microdvd", 25.0)
     assert subs.events[0].start == 1000
-    out = dump_subtitles(subs, "microdvd").decode()
+    out = dump_subtitles(subs, "microdvd").decode("utf-8-sig")
     assert out.startswith("{25}{50}")
 
 

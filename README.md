@@ -211,6 +211,12 @@ logged in.
 - Language is detected from the filename (`Movie.en.srt`, `Movie.eng.srt`, `Movie.English.srt`). For files
   without a language code, use the scan option *without a language code, verified with LibreTranslate detection* or pick the source language manually.
 - Sessions and the job queue are kept in memory: a restart logs you out and clears the job history.
+- Output files are written as UTF-8 with a BOM, so players and TVs that assume a legacy encoding still show accents correctly.
+- Formatting tags (`<i>`, `<font color>`, `{\an8}`, …) are never sent to LibreTranslate. Text on either side of a tag is
+  translated as a separate piece, so a tag in the middle of a sentence can make that sentence's translation less fluent.
+  Lines with their own colour or tag, dialogue dashes and sound effects are translated line by line. All-caps sound cues
+  are translated in sentence case and then converted back to capitals.
+- Translation quality depends on the LibreTranslate model. Short sound-effect cues in particular can come out literal or odd.
 
 ## Development
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,6 +12,8 @@ from pathlib import Path
 import charset_normalizer
 import pysubs2
 from pysubs2.exceptions import UnknownFPSError
+
+log = logging.getLogger("subtitle_translator.subtitles")
 
 SUPPORTED_EXTENSIONS = {".srt": "srt", ".vtt": "vtt", ".ass": "ass", ".ssa": "ssa", ".sub": "microdvd"}
 _MICRODVD_LINE = re.compile(r"^\{\d+\}\{\d*\}")
@@ -192,88 +196,157 @@ def dump_subtitles(subs: pysubs2.SSAFile, fmt: str) -> bytes:
         text = subs.to_string(fmt, fps=subs.fps, write_fps_declaration=declared)
     else:
         text = subs.to_string(fmt)
-    return text.encode("utf-8")
+    # UTF-8 with BOM: without it many players, TVs and Windows editors assume CP1252.
+    return codecs.BOM_UTF8 + text.encode("utf-8")
 
 
-# --- Tag protection and rewrapping ------------------------------------------------
+# --- Cue segmentation, tag protection and rewrapping ------------------------------
+#
+# Tags never reach LibreTranslate. A cue is split into lines and every line into the
+# text segments between tags; only those segments are translated and the tags are put
+# back verbatim, so no placeholder can leak or get lost. Lines are only joined (for
+# better context) when they are plain continuation text of one sentence.
 
 _TAG = re.compile(r"\{[^{}]*\}|<[^<>]+>|\\h")
 _LINEBREAK = re.compile(r"\\[Nn]|\n")
-_PLACEHOLDER = re.compile(r"\[\s*\[\s*(\d+)\s*\]\s*\]")
+_TAG_RUN_START = re.compile(r"^(?:\s*(?:\{[^{}]*\}|<[^<>]+>))+")
+_TAG_RUN_END = re.compile(r"(?:(?:\{[^{}]*\}|<[^<>]+>)\s*)+$")
+_LETTER = re.compile(r"[^\W\d_]")
+_LEAD_DECOR = re.compile(r"^\s*(?:[-–—]+\s*)?(?:[♪♫#*]+\s*)?")
+_TRAIL_DECOR = re.compile(r"\s*(?:[♪♫#*]+\s*)?$")
+_SENTENCE_END = re.compile(r"[.!?…]+[\"'”’»)\]]*$")
+_LINE_START_MARKERS = ("-", "–", "—", "♪", "♫", "#", "*", "(", "[")
+_BRACKETS = (("(", ")"), ("[", "]"))
 
 
-def _placeholder(i: int) -> str:
-    return f"[[{i}]]"
+def _is_caps(text: str) -> bool:
+    """True for SHOUTED / SDH text: at least two letters and none of them lowercase."""
+    letters = [c for c in text if c.isalpha()]
+    return len(letters) >= 2 and not any(c.islower() for c in letters) and any(c.isupper() for c in letters)
+
+
+def _sentence_case(text: str) -> str:
+    lowered = text.lower()
+    m = _LETTER.search(lowered)
+    return lowered if m is None else lowered[: m.start()] + lowered[m.start()].upper() + lowered[m.start() + 1 :]
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"\\[Nn]|\s+", " ", text).strip()
 
 
 @dataclass
-class _Unit:
-    """One translatable piece of text with its inline tags taken out."""
+class _Segment:
+    """Text between tags, without decoration such as dialogue dashes, music notes or brackets."""
 
     lead: str
+    core: str
     trail: str
-    tags: list[str]
-    body: str
-    n_lines: int
+    n_lines: int = 1
+    caps: bool = False
+
+    @property
+    def query(self) -> str:
+        # Machine translation handles ALL-CAPS badly; translate in sentence case and re-apply caps.
+        return _sentence_case(self.core) if self.caps else self.core
 
     def rebuild(self, translated: str) -> str:
-        text = rewrap(translated, self.n_lines)
-        seen: set[int] = set()
-
-        def restore(m: re.Match[str]) -> str:
-            idx = int(m.group(1))
-            if idx >= len(self.tags) or idx in seen:
-                return ""
-            seen.add(idx)
-            return self.tags[idx]
-
-        text = _PLACEHOLDER.sub(restore, text)
-        missing = "".join(t for i, t in enumerate(self.tags) if i not in seen)
-        text = re.sub(r"[ \t]{2,}", " ", text).strip(" ")
-        return f"{self.lead}{text}{missing}{self.trail}"
+        text = _clean(translated) or self.core
+        if text.endswith(".") and not text.endswith("..") and not _SENTENCE_END.search(self.core):
+            text = text[:-1].rstrip() or text
+        if self.caps:
+            text = text.upper()
+        return f"{self.lead}{rewrap(text, self.n_lines)}{self.trail}"
 
 
-def _make_unit(text: str, n_lines: int) -> _Unit:
-    pieces = _TAG.split(text)
-    tags = _TAG.findall(text)
-    lead_parts: list[str] = []
-    while tags and not pieces[0].strip():
-        lead_parts.append(pieces.pop(0) + tags.pop(0))
-    trail_parts: list[str] = []
-    while tags and not pieces[-1].strip():
-        trail_parts.insert(0, tags.pop() + pieces.pop())
-    body = pieces[0]
-    for i, _tag in enumerate(tags):
-        body += _placeholder(i) + pieces[i + 1]
-    lead = "".join(lead_parts)
-    trail = "".join(trail_parts)
-    stripped = body.strip()
-    lead += body[: len(body) - len(body.lstrip())]
-    trail = body[len(body.rstrip()):] + trail if stripped else trail
-    return _Unit(lead=lead, trail=trail, tags=tags, body=stripped, n_lines=n_lines)
+Part = str | _Segment
+
+
+def _text_parts(text: str, n_lines: int = 1) -> list[Part]:
+    if not _LETTER.search(text):
+        return [text]
+    lead = _LEAD_DECOR.match(text).group(0)  # type: ignore[union-attr]
+    rest = text[len(lead) :]
+    trail_m = _TRAIL_DECOR.search(rest)
+    trail = trail_m.group(0) if trail_m else ""
+    core = rest[: len(rest) - len(trail)]
+    for o, c in _BRACKETS:
+        if core.startswith(o) and core.endswith(c) and core.count(o) == 1 and core.count(c) == 1:
+            inner = core[1:-1]
+            lead += o + inner[: len(inner) - len(inner.lstrip())]
+            trail = inner[len(inner.rstrip()) :] + c + trail
+            core = inner.strip()
+            break
+    if not _LETTER.search(core):
+        return [text]
+    return [_Segment(lead=lead, core=core, trail=trail, n_lines=n_lines, caps=_is_caps(core))]
+
+
+def _line_parts(line: str) -> list[Part]:
+    pieces = _TAG.split(line)
+    tags = _TAG.findall(line)
+    parts: list[Part] = []
+    for i, piece in enumerate(pieces):
+        if piece:
+            parts.extend(_text_parts(piece))
+        if i < len(tags):
+            parts.append(tags[i])
+    return parts
+
+
+def _joinable(lines: list[str]) -> bool:
+    """Only plain continuation text of one sentence may be joined and re-wrapped."""
+    if len(lines) < 2:
+        return False
+    plain = [_TAG.sub("", ln).strip() for ln in lines]
+    if not all(_LETTER.search(p) for p in plain):
+        return False
+    inner = _TAG_RUN_END.sub("", _TAG_RUN_START.sub("", "\n".join(ln.strip() for ln in lines)))
+    if _TAG.search(inner):
+        return False  # tags/colours between or inside lines: different speakers or styling
+    if len({_is_caps(p) for p in plain}) > 1:
+        return False
+    if any(p.startswith(_LINE_START_MARKERS) for p in plain):
+        return False  # dialogue dashes, songs, sound effects
+    return not any(_SENTENCE_END.search(p) for p in plain[:-1])
+
+
+def _joined_parts(lines: list[str]) -> list[Part]:
+    joined = " ".join(ln.strip() for ln in lines)
+    m = _TAG_RUN_START.match(joined)
+    lead = m.group(0) if m else ""
+    rest = joined[len(lead) :]
+    m = _TAG_RUN_END.search(rest)
+    trail = m.group(0) if m else ""
+    body = rest[: len(rest) - len(trail)]
+    return [p for p in (lead, *_text_parts(body, n_lines=len(lines)), trail) if p != ""]
 
 
 @dataclass
 class _Cue:
-    units: list[_Unit]
-    separator: str = "\\N"
+    rows: list[list[Part]]
+
+    @property
+    def segments(self) -> list[_Segment]:
+        return [p for row in self.rows for p in row if isinstance(p, _Segment)]
 
     def rebuild(self, translations: list[str]) -> str:
-        return self.separator.join(u.rebuild(t) for u, t in zip(self.units, translations, strict=True))
+        it = iter(translations)
+        return "\\N".join(
+            "".join(p if isinstance(p, str) else p.rebuild(next(it)) for p in row) for row in self.rows
+        )
 
 
-def prepare_cue(text: str) -> _Cue:
-    """Split a cue into translatable units.
-
-    Dialogue cues (every line starts with "-") are translated line by line;
-    otherwise the lines are joined for better context and re-wrapped afterwards.
-    """
+def prepare_cue(text: str, join: bool = True) -> _Cue:
     lines = _LINEBREAK.split(text)
-    plain = [_TAG.sub("", ln).strip() for ln in lines]
-    if len(lines) > 1 and all(p.startswith(("-", "–", "—")) for p in plain if p):
-        return _Cue([_make_unit(ln, 1) for ln in lines])
-    joined = " ".join(ln.strip() for ln in lines)
-    return _Cue([_make_unit(joined, max(1, sum(1 for p in plain if p)))])
+    if join and _joinable(lines):
+        return _Cue([_joined_parts(lines)])
+    return _Cue([_line_parts(ln) for ln in lines])
+
+
+def line_count(text: str) -> int:
+    """Number of lines with visible text."""
+    return sum(1 for ln in _LINEBREAK.split(text) if _TAG.sub("", ln).strip())
 
 
 def rewrap(text: str, n_lines: int) -> str:
@@ -308,26 +381,36 @@ class TranslationResult:
     sample: list[str] = field(default_factory=list)
 
 
+async def _translate_cues(cues: list[_Cue], translate: TranslateFn) -> list[str]:
+    unique = list(dict.fromkeys(s.query for cue in cues for s in cue.segments))
+    translated = await translate(unique) if unique else []
+    if len(translated) != len(unique):
+        raise SubtitleError("Translation service returned an unexpected number of lines")
+    lookup = dict(zip(unique, translated, strict=True))
+    return [cue.rebuild([lookup[s.query] for s in cue.segments]) for cue in cues]
+
+
 async def translate_subtitles(subs: pysubs2.SSAFile, translate: TranslateFn) -> TranslationResult:
     """Translate the text of every dialogue event in place. Timing is never touched."""
-    work: list[tuple[pysubs2.SSAEvent, _Cue]] = []
-    for event in subs.events:
-        if event.is_comment or event.is_drawing or not event.text.strip():
-            continue
-        work.append((event, prepare_cue(event.text)))
+    events = [e for e in subs.events if not (e.is_comment or e.is_drawing or not e.text.strip())]
+    originals = [e.text for e in events]
+    texts = await _translate_cues([prepare_cue(t) for t in originals], translate)
 
-    bodies = [u.body for _, cue in work for u in cue.units if u.body]
-    translated = await translate(bodies) if bodies else []
-    if len(translated) != len(bodies):
-        raise SubtitleError("Translation service returned an unexpected number of lines")
+    # Invariant: every visible source line has a translated line. Joined cues that lost a
+    # line (e.g. a one-word translation) are redone line by line.
+    redo = [i for i, (src, dst) in enumerate(zip(originals, texts, strict=True)) if line_count(src) != line_count(dst)]
+    if redo:
+        fixed = await _translate_cues([prepare_cue(originals[i], join=False) for i in redo], translate)
+        for i, text in zip(redo, fixed, strict=True):
+            if line_count(text) == line_count(originals[i]):
+                texts[i] = text
+            else:
+                log.warning("Keeping the original text of a cue whose line structure could not be preserved")
+                texts[i] = originals[i]
 
-    it = iter(translated)
-    result = TranslationResult(cues_total=len(work))
-    for event, cue in work:
-        texts = [next(it) if u.body else "" for u in cue.units]
-        event.text = cue.rebuild(texts)
-        result.cues_translated += 1
-    return result
+    for event, text in zip(events, texts, strict=True):
+        event.text = text
+    return TranslationResult(cues_total=len(events), cues_translated=len(events))
 
 
 def sample_text(subs: pysubs2.SSAFile, max_chars: int = 600) -> str:

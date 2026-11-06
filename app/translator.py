@@ -42,6 +42,15 @@ def is_insecure_remote(url: str) -> bool:
         return True
 
 
+def _looks_untranslated(query: str, result: str) -> bool:
+    letters = sum(c.isalpha() for c in query)
+    if letters == 0:
+        return False
+    if not result.strip():
+        return True
+    return letters >= 3 and " ".join(query.split()).casefold() == " ".join(result.split()).casefold()
+
+
 @dataclass
 class LibreTranslateClient:
     base_url: str
@@ -51,6 +60,7 @@ class LibreTranslateClient:
     timeout: float = 120.0
     retries: int = 3
     retry_delay: float = 1.0
+    max_single_retries: int = 25
     transport: httpx.AsyncBaseTransport | None = None
     _languages_cache: tuple[float, list[dict]] | None = field(default=None, repr=False)
 
@@ -160,10 +170,26 @@ class LibreTranslateClient:
                     translated = [translated]
                 if not isinstance(translated, list) or len(translated) != len(batch):
                     raise TranslatorError("LibreTranslate returned an unexpected response")
-                out.extend(str(t) for t in translated)
+                translated = [t if isinstance(t, str) else "" for t in translated]
+                await self._retry_untranslated(client, batch, translated, source, target)
+                out.extend(translated)
                 if progress:
                     progress(len(out), len(texts))
         return out
+
+    async def _retry_untranslated(
+        self, client: httpx.AsyncClient, batch: list[str], translated: list[str], source: str, target: str
+    ) -> None:
+        """Retry, one by one, items a batch returned empty or unchanged (in place)."""
+        suspects = [i for i, (q, t) in enumerate(zip(batch, translated, strict=True)) if _looks_untranslated(q, t)]
+        for i in suspects[: self.max_single_retries]:
+            payload = self._with_key({"q": batch[i], "source": source, "target": target, "format": "text"})
+            data = await self._request(client, "POST", "/translate", json=payload)
+            single = data.get("translatedText") if isinstance(data, dict) else None
+            if isinstance(single, list) and len(single) == 1:
+                single = single[0]
+            if isinstance(single, str) and single.strip():
+                translated[i] = single
 
     async def detect(self, text: str) -> tuple[str, float] | None:
         async with self._client() as client:
