@@ -207,3 +207,22 @@ def test_change_password(client):
     assert client.get("/api/session").status_code == 200
     client.post("/api/logout", json={})
     assert client.post("/api/login", json={"username": USERNAME, "password": "new-password-123"}).status_code == 200
+
+
+def test_lan_ip_host_over_plain_http(env: EnvSettings):
+    """Accessed as http://SERVER_IP:8790 on the LAN: cookie, CSRF and Origin checks must all work."""
+    write_config(env)
+    lan = "http://192.168.1.10:8790"
+    with TestClient(make_client(env).app, base_url=lan, headers={"Origin": lan}) as client:
+        resp = client.post("/api/login", json={"username": USERNAME, "password": PASSWORD})
+        assert resp.status_code == 200
+        cookie = resp.headers["set-cookie"].lower()
+        assert "httponly" in cookie and "secure" not in cookie.replace("httponly", "")
+        info = client.get("/api/session").json()
+        client.headers["X-CSRF-Token"] = info["csrf_token"]
+        assert client.get("/api/files", params={"path": ""}).status_code == 200
+        # Same IP, different port or another host is a different origin and is rejected.
+        for bad in ("http://192.168.1.10:8080", "http://192.168.1.11:8790"):
+            r = client.post("/api/logout", json={}, headers={"Origin": bad})
+            assert r.status_code == 403, bad
+        assert client.post("/api/logout", json={}).status_code == 200

@@ -36,6 +36,8 @@ self-hosted LibreTranslate instance. Deployed with Docker Compose (see README.md
   `innerHTML` with data.
 - Job endpoints are `async def` because `JobManager` uses an `asyncio.Queue`, which is not thread-safe.
 - Translated files are written with `write_output` only. It never overwrites unless `overwrite=True`.
+- The app listens on port 8790 (Dockerfile, compose, README); plain HTTP on the LAN, so `COOKIE_SECURE`
+  defaults to false and nothing may assume the host is `localhost`.
 - Run one uvicorn worker: sessions, rate limits and jobs live in memory.
 - Dependencies: runtime deps in `requirements.in`, compiled with hashes into `requirements.txt` for
   Python 3.12 (`pip-compile --generate-hashes`, run inside `python:3.12-slim`). Ask before adding any.

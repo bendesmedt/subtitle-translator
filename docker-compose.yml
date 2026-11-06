@@ -20,8 +20,10 @@ services:
       # CHANGE THIS: host folder with your movies/series, mounted at /media.
       - /path/to/your/media:/media
     ports:
-      # Only reachable from the host itself. Use an SSH tunnel or a reverse proxy.
-      - "127.0.0.1:8080:8080"
+      # Reachable on all server interfaces: http://SERVER_IP:8790 from your LAN.
+      # Plain HTTP: never port-forward this to the internet. To listen on one
+      # interface only, prefix the server's LAN IP, e.g. "192.168.1.10:8790:8790".
+      - "8790:8790"
     read_only: true
     tmpfs:
       - /tmp

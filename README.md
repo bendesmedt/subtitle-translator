@@ -90,14 +90,24 @@ The token changes on every restart until setup is completed.
 
 ### 6. Open the app
 
-The port is bound to `127.0.0.1:8080` on the server only — it is not exposed to your network. From your
-own computer, open an SSH tunnel:
+The app listens on port **8790** on all of the server's network interfaces. Find the server's LAN IP
+(on the server):
 
 ```sh
-ssh -L 8080:127.0.0.1:8080 you@your-server
+hostname -I        # e.g. 192.168.1.10 ...
 ```
 
-and browse to <http://localhost:8080>. (For permanent access, use a reverse proxy with HTTPS — see below.)
+and browse from any device on your network to `http://SERVER_IP:8790`, e.g. <http://192.168.1.10:8790>.
+
+**Firewall:** Docker publishes ports through its own iptables rules, which are evaluated *before* `ufw`, so
+a `ufw` rule is normally not needed (and `ufw deny` does not block it). If your server filters traffic in
+another way (e.g. firewalld zones or rules in Docker's `DOCKER-USER` chain), allow TCP port 8790 from your
+LAN. To make the app listen on the LAN interface only, change the port line in `docker-compose.yml` to
+`"192.168.1.10:8790:8790"` (your server's IP).
+
+> **Security note:** on the LAN, traffic (including your password) is plain HTTP and unencrypted. That is
+> fine on a trusted home network, but **do not port-forward 8790 to the internet**. For remote or encrypted
+> access, use a VPN or the HTTPS reverse proxy below.
 
 ### 7. Setup wizard
 
@@ -113,12 +123,12 @@ After finishing, you are sent to the login page.
 
 ## HTTPS with a reverse proxy (optional)
 
-The app has no built-in TLS. To access it from your network or the internet, put it behind a reverse
-proxy. Example with [Caddy](https://caddyserver.com/) running on the same host (automatic HTTPS):
+The app has no built-in TLS. For encrypted access (e.g. from outside your network), put it behind a
+reverse proxy. Example with [Caddy](https://caddyserver.com/) running on the same host (automatic HTTPS):
 
 ```caddyfile
 subs.example.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8790
 }
 ```
 
@@ -138,7 +148,8 @@ proxy running as a container on the same network has its container IP. Never use
 
 If your proxy rewrites the `Host` header, also set `ALLOWED_ORIGINS: "https://subs.example.com"`.
 
-Apply the changes with `docker compose up -d`.
+Apply the changes with `docker compose up -d`. With a proxy in front, you can stop exposing 8790 to the
+LAN by changing the port line to `"127.0.0.1:8790:8790"`.
 
 ## Updating
 
@@ -206,7 +217,7 @@ python3 -m venv .venv
 Run locally:
 
 ```sh
-CONFIG_DIR=./config MEDIA_BASE=/path/to/media .venv/bin/uvicorn --factory app.main:create_app --port 8080
+CONFIG_DIR=./config MEDIA_BASE=/path/to/media .venv/bin/uvicorn --factory app.main:create_app --port 8790
 ```
 
 See [AGENTS.md](AGENTS.md) for architecture and conventions.
