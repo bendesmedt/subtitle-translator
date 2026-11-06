@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Subtitle Translator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="center">
+  <main class="card narrow">
+    <h1>Subtitle Translator</h1>
+    <form id="login-form" autocomplete="on">
+      <label>Username <input id="username" name="username" autocomplete="username" required maxlength="64"></label>
+      <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <button type="submit" class="primary">Sign in</button>
+      <p id="login-msg" class="msg" role="alert"></p>
+    </form>
+  </main>
+  <script src="/static/common.js"></script>
+  <script src="/static/login.js"></script>
+</body>
+</html>

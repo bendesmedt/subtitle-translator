@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subtitle Translator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Subtitle Translator</h1>
+    <div class="spacer"></div>
+    <span id="user" class="hint"></span>
+    <button id="logout-btn">Sign out</button>
+  </header>
+
+  <p id="insecure-banner" class="banner warn hidden">LibreTranslate is reached over plain http on a remote host — subtitle text travels unencrypted. Use https in Settings.</p>
+  <p id="lang-banner" class="banner error hidden"></p>
+
+  <div class="toolbar">
+    <label>From <select id="source"></select></label>
+    <label>To <select id="target"></select></label>
+    <label class="check"><input type="checkbox" id="overwrite"> Overwrite existing translations</label>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="browse" role="tab">Browse</button>
+    <button class="tab" data-tab="scan" role="tab">Scan</button>
+    <button class="tab" data-tab="search" role="tab">Search</button>
+    <button class="tab" data-tab="jobs" role="tab">Jobs <span id="jobs-badge" class="badge hidden"></span></button>
+    <button class="tab" data-tab="settings" role="tab">Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-browse" class="panel">
+      <nav id="crumbs" class="crumbs"></nav>
+      <div class="actions">
+        <button id="browse-refresh">Refresh</button>
+        <button id="browse-translate" class="primary" disabled>Translate selected</button>
+        <span id="browse-msg" class="msg"></span>
+      </div>
+      <div id="browse-list"></div>
+    </section>
+
+    <section id="tab-scan" class="panel hidden">
+      <p class="hint">Recursively finds subtitles in the <em>From</em> language that have no translation in the <em>To</em> language yet.</p>
+      <div class="row">
+        <label>Folder <input id="scan-path" placeholder="(whole media folder)" maxlength="4096"></label>
+        <button id="scan-use-current" type="button">Use browsed folder</button>
+      </div>
+      <div class="row">
+        <label>Source files
+          <select id="scan-mode">
+            <option value="code">with the From language code in the name (Movie.en.srt)</option>
+            <option value="none">without a language code (Movie.srt), assumed From language</option>
+            <option value="detect">without a language code, verified with LibreTranslate detection</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="scan-existing"> Include files already translated</label>
+      </div>
+      <div class="actions">
+        <button id="scan-btn" class="primary">Scan</button>
+        <button id="scan-translate" class="primary" disabled>Translate selected</button>
+        <span id="scan-msg" class="msg"></span>
+      </div>
+      <div id="scan-list"></div>
+    </section>
+
+    <section id="tab-search" class="panel hidden">
+      <form id="search-form" class="row">
+        <label>File or folder name contains <input id="search-q" required maxlength="200"></label>
+        <button type="submit" class="primary">Search</button>
+      </form>
+      <div class="actions">
+        <button id="search-translate" class="primary" disabled>Translate selected</button>
+        <span id="search-msg" class="msg"></span>
+      </div>
+      <div id="search-list"></div>
+    </section>
+
+    <section id="tab-jobs" class="panel hidden">
+      <div class="actions"><button id="jobs-refresh">Refresh</button></div>
+      <div id="jobs-list"></div>
+    </section>
+
+    <section id="tab-settings" class="panel hidden">
+      <form id="settings-form">
+        <h2>LibreTranslate</h2>
+        <label>URL <input id="s-url" required maxlength="2048"></label>
+        <label>API key <input id="s-key" type="password" maxlength="256" autocomplete="off" placeholder="(unchanged)"></label>
+        <label class="check"><input type="checkbox" id="s-key-clear"> Remove stored API key</label>
+        <button type="button" id="s-test">Test connection</button>
+        <p id="s-test-msg" class="msg"></p>
+
+        <h2>Media folder</h2>
+        <div class="picker">
+          <div>Selected: <strong id="s-media-selected">/</strong></div>
+          <nav id="s-media-crumbs" class="crumbs"></nav>
+          <ul id="s-media-folders" class="folders"></ul>
+        </div>
+
+        <h2>Defaults &amp; limits</h2>
+        <div class="row">
+          <label>Default source <select id="s-source"></select></label>
+          <label>Default target <select id="s-target"></select></label>
+        </div>
+        <div class="row">
+          <label>Batch size (cues per request) <input id="s-batch" type="number" min="1" max="200" required></label>
+          <label>Max file size (MB) <input id="s-maxmb" type="number" min="0.1" max="50" step="0.1" required></label>
+          <label>Max files per job <input id="s-maxfiles" type="number" min="1" max="5000" required></label>
+          <label>MicroDVD default FPS <input id="s-fps" type="number" min="1" max="240" step="0.001" required></label>
+        </div>
+        <div class="row">
+          <label>Session idle timeout (hours) <input id="s-idle" type="number" min="0.1" max="720" step="0.1" required></label>
+          <label>Session max lifetime (hours) <input id="s-abs" type="number" min="0.1" max="2160" step="0.1" required></label>
+        </div>
+        <button type="submit" class="primary">Save settings</button>
+        <p id="settings-msg" class="msg"></p>
+      </form>
+
+      <form id="password-form" autocomplete="off">
+        <h2>Change password</h2>
+        <input type="text" autocomplete="username" id="pw-username" class="hidden" tabindex="-1" aria-hidden="true">
+        <label>Current password <input id="pw-current" type="password" required maxlength="256" autocomplete="current-password"></label>
+        <label>New password (min. 12) <input id="pw-new" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <label>Confirm new password <input id="pw-new2" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <button type="submit" class="primary">Change password</button>
+        <p id="password-msg" class="msg"></p>
+      </form>
+    </section>
+  </main>
+  <script src="/static/common.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

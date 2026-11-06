@@ -1,0 +1,21 @@
+# Runtime data and secrets
+config/
+.env
+*.env
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

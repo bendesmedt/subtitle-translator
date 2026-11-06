@@ -1,0 +1,212 @@
+# Subtitle Translator
+
+A small, self-hosted web app that translates subtitle files in your media library using your own
+[LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) instance. Timestamps, styling and
+formatting tags are preserved; only the text is translated.
+
+- **Browse** your media folder and translate selected files.
+- **Scan** a folder tree for subtitles that don't have a translation yet and translate them in bulk.
+- **Search** subtitle files by name and translate the matches.
+- Supported formats: `.srt`, `.vtt`, `.ass`, `.ssa` and MicroDVD text `.sub`.
+- Output is written next to the original, e.g. `Movie.en.srt` → `Movie.fr.srt`. Existing files are skipped
+  unless you choose to overwrite.
+- Single user with username/password login, configured in a one-time setup wizard.
+
+## Install (Docker)
+
+### 1. Prerequisites
+
+- A Linux server (or any machine) with **Docker** and the **Docker Compose plugin**
+  (`docker compose version` should work).
+- A LibreTranslate instance the server can reach, **or** use the bundled one (step 3).
+
+### 2. Get the code
+
+```sh
+git clone https://github.com/bendesmedt/subtitle-translator
+cd subtitle-translator
+```
+
+### 3. Configure `docker-compose.yml`
+
+**Media folder** — replace the placeholder with the host folder that contains your movies/series:
+
+```yaml
+    volumes:
+      - ./config:/config
+      - /path/to/your/media:/media     # e.g. /srv/media:/media
+```
+
+**User/group** — the container runs as the user that owns your media, so it can write translated files
+next to the originals. Find the IDs of that user on the host:
+
+```sh
+id            # e.g. uid=1000(you) gid=1000(you) ...
+```
+
+Put them in a `.env` file next to `docker-compose.yml` (defaults are 1000:1000):
+
+```sh
+echo "PUID=$(id -u)" > .env
+echo "PGID=$(id -g)" >> .env
+```
+
+Create the config folder yourself so it is owned by that user (otherwise Docker creates it as root and the
+app cannot save its settings):
+
+```sh
+mkdir -p config
+```
+
+**Bundled LibreTranslate (optional)** — if you don't run LibreTranslate yet, the compose file contains an
+optional `libretranslate` service. Edit `LT_LOAD_ONLY` to the language codes you need (fewer languages =
+less disk and RAM), and enable it by adding its profile to `.env`:
+
+```sh
+echo "COMPOSE_PROFILES=libretranslate" >> .env
+```
+
+All `docker compose` commands below then include it automatically. It is only reachable from the app
+container; in the wizard you use `http://libretranslate:5000`.
+
+### 4. Start
+
+```sh
+docker compose up -d --build
+```
+
+This also starts the bundled LibreTranslate if you enabled its profile in `.env`. The bundled LibreTranslate downloads its language models on first start; this can take several minutes
+(`docker compose logs -f libretranslate`).
+
+### 5. Get the one-time setup token
+
+On first start the app is in setup mode and prints a setup token in its log:
+
+```sh
+docker compose logs subtitle-translator | grep "SETUP TOKEN"
+```
+
+The token changes on every restart until setup is completed.
+
+### 6. Open the app
+
+The port is bound to `127.0.0.1:8080` on the server only — it is not exposed to your network. From your
+own computer, open an SSH tunnel:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 you@your-server
+```
+
+and browse to <http://localhost:8080>. (For permanent access, use a reverse proxy with HTTPS — see below.)
+
+### 7. Setup wizard
+
+1. **Setup token** — paste the token from the log.
+2. **Account** — choose a username and a password (min. 12 characters).
+3. **LibreTranslate** — URL (e.g. `http://libretranslate:5000` for the bundled one, or
+   `http://192.168.1.10:5000`) and an optional API key. Use *Test connection* to check it.
+4. **Media folder** — pick the folder inside `/media` that the app may access (it cannot see anything
+   outside it).
+5. **Default languages** — default source and target language.
+
+After finishing, you are sent to the login page.
+
+## HTTPS with a reverse proxy (optional)
+
+The app has no built-in TLS. To access it from your network or the internet, put it behind a reverse
+proxy. Example with [Caddy](https://caddyserver.com/) running on the same host (automatic HTTPS):
+
+```caddyfile
+subs.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Then set in `docker-compose.yml`:
+
+```yaml
+    environment:
+      COOKIE_SECURE: "true"          # session cookie is only sent over HTTPS
+      FORWARDED_ALLOW_IPS: "172.16.0.0/12"   # see below
+```
+
+`FORWARDED_ALLOW_IPS` must contain the IP your proxy has *as seen by the container*, so the app trusts the
+`X-Forwarded-For` header and login rate limiting works per client. A proxy on the host connects through
+the Docker bridge gateway (find it with
+`docker network inspect subtitle-translator_default --format '{{(index .IPAM.Config 0).Gateway}}'`). A
+proxy running as a container on the same network has its container IP. Never use `*`.
+
+If your proxy rewrites the `Host` header, also set `ALLOWED_ORIGINS: "https://subs.example.com"`.
+
+Apply the changes with `docker compose up -d`.
+
+## Updating
+
+```sh
+cd subtitle-translator
+git pull
+docker compose up -d --build
+```
+
+Your settings and account live in `./config` and are kept.
+
+## Reset setup / forgotten password
+
+```sh
+docker compose stop subtitle-translator
+rm config/config.json
+docker compose up -d
+docker compose logs subtitle-translator | grep "SETUP TOKEN"
+```
+
+Then run the setup wizard again (step 7). You can change your password at any time under *Settings* while
+logged in.
+
+## Troubleshooting
+
+**"Permission denied" when translating, or the media folder is empty**
+- Check that `PUID`/`PGID` in `.env` match the owner of your media (`ls -ln /path/to/your/media`) and
+  recreate the container: `docker compose up -d`.
+- The user needs write permission on the folders where the translated files are created.
+- Hidden files/folders (starting with `.`) and symlinks pointing outside the media folder are not shown.
+
+**The app won't start / settings can't be saved**
+- `config/` must be writable by `PUID`: `sudo chown -R $(id -u):$(id -g) config`.
+- Check the log: `docker compose logs subtitle-translator`.
+
+**"LibreTranslate is unreachable"**
+- Bundled instance: is it running and done downloading models? `docker compose ps`
+  and `docker compose logs libretranslate`. Use `http://libretranslate:5000`, not `localhost`.
+- External instance: `localhost` inside the container is the container itself. Use the server's LAN IP
+  or hostname. Test from the container:
+  `docker compose exec subtitle-translator python -c "import urllib.request; print(urllib.request.urlopen('http://HOST:5000/languages').status)"`
+- "LibreTranslate rejected the API key": check the key under *Settings*.
+
+**Login is blocked**
+- After several failed logins, further attempts are delayed (up to 15 minutes). Wait, or restart the
+  container (`docker compose restart subtitle-translator`), which also logs out all sessions.
+
+## Limitations
+
+- Image-based subtitles (VobSub `.sub`/`.idx`, PGS `.sup`) are not supported — only text formats.
+- WebVTT cue settings (position/alignment after the timestamp) are not preserved.
+- Language is detected from the filename (`Movie.en.srt`, `Movie.eng.srt`, `Movie.English.srt`). For files
+  without a language code, use the scan option *without a language code, verified with LibreTranslate detection* or pick the source language manually.
+- Sessions and the job queue are kept in memory: a restart logs you out and clears the job history.
+
+## Development
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest -q
+.venv/bin/ruff check .
+```
+
+Run locally:
+
+```sh
+CONFIG_DIR=./config MEDIA_BASE=/path/to/media .venv/bin/uvicorn --factory app.main:create_app --port 8080
+```
+
+See [AGENTS.md](AGENTS.md) for architecture and conventions.

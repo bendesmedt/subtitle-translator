@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setup · Subtitle Translator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="center">
+  <main class="card">
+    <h1>Subtitle Translator — first-run setup</h1>
+
+    <section id="step-token">
+      <h2>1. Setup token</h2>
+      <p>Find the one-time token in the container log:
+        <code>docker compose logs subtitle-translator | grep "SETUP TOKEN"</code></p>
+      <label>Setup token <input id="token" autocomplete="off" spellcheck="false" maxlength="256"></label>
+      <button id="token-btn" class="primary">Continue</button>
+      <p id="token-msg" class="msg" role="alert"></p>
+    </section>
+
+    <form id="setup-form" class="hidden" autocomplete="off">
+      <section>
+        <h2>2. Account</h2>
+        <label>Username <input id="username" required maxlength="64" pattern="[A-Za-z0-9._@\-]+" autocomplete="username"></label>
+        <label>Password (min. 12 characters) <input id="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <label>Confirm password <input id="password2" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+      </section>
+
+      <section>
+        <h2>3. LibreTranslate</h2>
+        <label>URL <input id="lt-url" required maxlength="2048" placeholder="http://libretranslate:5000"></label>
+        <label>API key (optional) <input id="lt-key" type="password" maxlength="256" autocomplete="off"></label>
+        <button type="button" id="test-btn">Test connection</button>
+        <p id="test-msg" class="msg" role="status"></p>
+      </section>
+
+      <section>
+        <h2>4. Media folder</h2>
+        <p>Choose the folder (inside the container's <code>/media</code> mount) that contains your subtitles.</p>
+        <div class="picker">
+          <div>Selected: <strong id="media-selected">/</strong></div>
+          <nav id="media-crumbs" class="crumbs"></nav>
+          <ul id="media-folders" class="folders"></ul>
+        </div>
+        <p id="media-msg" class="msg" role="status"></p>
+      </section>
+
+      <section>
+        <h2>5. Default languages</h2>
+        <div class="row">
+          <label>Source <select id="def-source"></select></label>
+          <label>Target <select id="def-target"></select></label>
+        </div>
+        <p class="hint">Run "Test connection" to load the languages offered by your LibreTranslate server.</p>
+      </section>
+
+      <button type="submit" class="primary">Finish setup</button>
+      <p id="setup-msg" class="msg" role="alert"></p>
+    </form>
+  </main>
+  <script src="/static/common.js"></script>
+  <script src="/static/setup.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+services:
+  subtitle-translator:
+    build: .
+    image: subtitle-translator:latest
+    container_name: subtitle-translator
+    restart: unless-stopped
+    # Run as the owner of your media files (find them with `id` on the host).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      # Set to "true" when the app is served over HTTPS (reverse proxy).
+      COOKIE_SECURE: "false"
+      # IP of your reverse proxy as seen by the container, so login rate limiting
+      # sees real client IPs. Leave as-is when not using a proxy.
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
+      # Optional, comma-separated extra origins allowed for API calls,
+      # e.g. "https://subs.example.com" if your proxy rewrites the Host header.
+      # ALLOWED_ORIGINS: ""
+    volumes:
+      - ./config:/config
+      # CHANGE THIS: host folder with your movies/series, mounted at /media.
+      - /path/to/your/media:/media
+    ports:
+      # Only reachable from the host itself. Use an SSH tunnel or a reverse proxy.
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - translate
+
+  # Optional: bundled LibreTranslate. Enable it by adding COMPOSE_PROFILES=libretranslate to .env
+  # and use http://libretranslate:5000 as the URL in the setup wizard.
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: libretranslate
+    profiles: ["libretranslate"]
+    restart: unless-stopped
+    environment:
+      # Limit the models downloaded on first start (comma-separated codes).
+      LT_LOAD_ONLY: "en,fr,de,es,nl"
+    volumes:
+      - libretranslate-models:/home/libretranslate/.local
+    networks:
+      - translate
+
+networks:
+  # Private network between the two containers. LibreTranslate publishes no ports,
+  # so it is only reachable from the subtitle-translator container. (Not "internal",
+  # because LibreTranslate downloads its language models on first start.)
+  translate: {}
+
+volumes:
+  libretranslate-models:
