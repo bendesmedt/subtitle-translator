@@ -37,6 +37,8 @@ def _public(request: Request, s: Settings) -> dict:
         "max_file_mb": s.max_file_mb,
         "max_files_per_job": s.max_files_per_job,
         "microdvd_fps": s.microdvd_fps,
+        "sentence_grouping": s.sentence_grouping,
+        "max_gap_seconds": s.max_gap_seconds,
         "session_idle_hours": s.session_idle_hours,
         "session_absolute_hours": s.session_absolute_hours,
     }
@@ -58,6 +60,8 @@ class SettingsIn(BaseModel):
     max_file_mb: float = Field(gt=0, le=50)
     max_files_per_job: int = Field(ge=1, le=5000)
     microdvd_fps: float = Field(gt=1, le=240)
+    sentence_grouping: bool = True
+    max_gap_seconds: float = Field(default=2.0, ge=0, le=10)
     session_idle_hours: float = Field(gt=0, le=24 * 30)
     session_absolute_hours: float = Field(gt=0, le=24 * 90)
 

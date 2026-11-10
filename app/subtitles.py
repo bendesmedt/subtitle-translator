@@ -200,23 +200,48 @@ def dump_subtitles(subs: pysubs2.SSAFile, fmt: str) -> bytes:
     return codecs.BOM_UTF8 + text.encode("utf-8")
 
 
-# --- Cue segmentation, tag protection and rewrapping ------------------------------
+# --- Segmentation, sentence grouping and redistribution ---------------------------
 #
-# Tags never reach LibreTranslate. A cue is split into lines and every line into the
-# text segments between tags; only those segments are translated and the tags are put
-# back verbatim, so no placeholder can leak or get lost. Lines are only joined (for
-# better context) when they are plain continuation text of one sentence.
+# Tags never reach the translator. Every visible line is split into the text segments
+# between tags ("slots"); tags, dialogue dashes, music notes and SDH brackets stay in
+# place and are restored verbatim. Consecutive plain slots that form one sentence -
+# across lines and across cues - are translated as one string ("unit") and the result
+# is spread back over the slots on word boundaries. Anything unusual (sound effects,
+# speaker changes, styling inside a line) is translated slot by slot.
 
 _TAG = re.compile(r"\{[^{}]*\}|<[^<>]+>|\\h")
 _LINEBREAK = re.compile(r"\\[Nn]|\n")
-_TAG_RUN_START = re.compile(r"^(?:\s*(?:\{[^{}]*\}|<[^<>]+>))+")
-_TAG_RUN_END = re.compile(r"(?:(?:\{[^{}]*\}|<[^<>]+>)\s*)+$")
+_HTML_TAG = re.compile(r"<\s*(/)?\s*([A-Za-z][\w-]*)")
 _LETTER = re.compile(r"[^\W\d_]")
 _LEAD_DECOR = re.compile(r"^\s*(?:[-–—]+\s*)?(?:[♪♫#*]+\s*)?")
 _TRAIL_DECOR = re.compile(r"\s*(?:[♪♫#*]+\s*)?$")
-_SENTENCE_END = re.compile(r"[.!?…]+[\"'”’»)\]]*$")
-_LINE_START_MARKERS = ("-", "–", "—", "♪", "♫", "#", "*", "(", "[")
+_SENTENCE_END = re.compile(r"[.!?…。！？]+[\"'”’»)\]]*$")
+_ELLIPSIS_END = re.compile(r"(?:\.\.\.|…)[\"'”’»]*$")
+_DASHES = frozenset("-–—")
+_NOT_PLAIN = re.compile(r"[♪♫#*()\[\]]")
+_SPLIT_AFTER = re.compile(r"[,;:.!?…]['\"”’»)\]]*$")
+_OPENING_PUNCT = frozenset("«“‘¿¡([\"'")
 _BRACKETS = (("(", ")"), ("[", "]"))
+_ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "prof", "vs", "mt", "sgt", "capt", "lt", "col", "gen", "rev", "fr"}
+)
+MAX_UNIT_CUES = 4
+MAX_UNIT_CHARS = 400
+MAX_CUE_TAGS = 32  # more tags than this: no grouping, keeps tag tracking linear
+MAX_OVERLAP_MS = 100  # rounding in timestamps, not a second speaker
+
+
+_DRAWING = re.compile(r"\{[^{}]*\\p[1-9]")
+
+
+def _is_drawing(text: str) -> bool:
+    """ASS vector drawing (``{\\p1}``). pysubs2's ``is_drawing`` is quadratic in the number of tags."""
+    return _DRAWING.search(text) is not None
+
+
+def _tail(text: str) -> str:
+    """End of the text; enough for end-of-sentence checks and keeps the regexes linear."""
+    return text.rstrip()[-32:]
 
 
 def _is_caps(text: str) -> bool:
@@ -235,14 +260,13 @@ def _clean(text: str) -> str:
     return re.sub(r"\\[Nn]|\s+", " ", text).strip()
 
 
-@dataclass
+@dataclass(eq=False)
 class _Segment:
     """Text between tags, without decoration such as dialogue dashes, music notes or brackets."""
 
     lead: str
     core: str
     trail: str
-    n_lines: int = 1
     caps: bool = False
 
     @property
@@ -250,19 +274,20 @@ class _Segment:
         # Machine translation handles ALL-CAPS badly; translate in sentence case and re-apply caps.
         return _sentence_case(self.core) if self.caps else self.core
 
-    def rebuild(self, translated: str) -> str:
+    def rebuild(self, translated: str, final: bool = True) -> str:
         text = _clean(translated) or self.core
-        if text.endswith(".") and not text.endswith("..") and not _SENTENCE_END.search(self.core):
+        # LibreTranslate likes to end a fragment with "."; drop it when the source had no sentence end.
+        if final and text.endswith(".") and not text.endswith("..") and not _SENTENCE_END.search(_tail(self.core)):
             text = text[:-1].rstrip() or text
         if self.caps:
             text = text.upper()
-        return f"{self.lead}{rewrap(text, self.n_lines)}{self.trail}"
+        return f"{self.lead}{text}{self.trail}"
 
 
 Part = str | _Segment
 
 
-def _text_parts(text: str, n_lines: int = 1) -> list[Part]:
+def _text_parts(text: str) -> list[Part]:
     if not _LETTER.search(text):
         return [text]
     lead = _LEAD_DECOR.match(text).group(0)  # type: ignore[union-attr]
@@ -279,7 +304,7 @@ def _text_parts(text: str, n_lines: int = 1) -> list[Part]:
             break
     if not _LETTER.search(core):
         return [text]
-    return [_Segment(lead=lead, core=core, trail=trail, n_lines=n_lines, caps=_is_caps(core))]
+    return [_Segment(lead=lead, core=core, trail=trail, caps=_is_caps(core))]
 
 
 def _line_parts(line: str) -> list[Part]:
@@ -294,81 +319,212 @@ def _line_parts(line: str) -> list[Part]:
     return parts
 
 
-def _joinable(lines: list[str]) -> bool:
-    """Only plain continuation text of one sentence may be joined and re-wrapped."""
-    if len(lines) < 2:
-        return False
-    plain = [_TAG.sub("", ln).strip() for ln in lines]
-    if not all(_LETTER.search(p) for p in plain):
-        return False
-    inner = _TAG_RUN_END.sub("", _TAG_RUN_START.sub("", "\n".join(ln.strip() for ln in lines)))
-    if _TAG.search(inner):
-        return False  # tags/colours between or inside lines: different speakers or styling
-    if len({_is_caps(p) for p in plain}) > 1:
-        return False
-    if any(p.startswith(_LINE_START_MARKERS) for p in plain):
-        return False  # dialogue dashes, songs, sound effects
-    return not any(_SENTENCE_END.search(p) for p in plain[:-1])
-
-
-def _joined_parts(lines: list[str]) -> list[Part]:
-    joined = " ".join(ln.strip() for ln in lines)
-    m = _TAG_RUN_START.match(joined)
-    lead = m.group(0) if m else ""
-    rest = joined[len(lead) :]
-    m = _TAG_RUN_END.search(rest)
-    trail = m.group(0) if m else ""
-    body = rest[: len(rest) - len(trail)]
-    return [p for p in (lead, *_text_parts(body, n_lines=len(lines)), trail) if p != ""]
-
-
-@dataclass
-class _Cue:
-    rows: list[list[Part]]
-
-    @property
-    def segments(self) -> list[_Segment]:
-        return [p for row in self.rows for p in row if isinstance(p, _Segment)]
-
-    def rebuild(self, translations: list[str]) -> str:
-        it = iter(translations)
-        return "\\N".join(
-            "".join(p if isinstance(p, str) else p.rebuild(next(it)) for p in row) for row in self.rows
-        )
-
-
-def prepare_cue(text: str, join: bool = True) -> _Cue:
-    lines = _LINEBREAK.split(text)
-    if join and _joinable(lines):
-        return _Cue([_joined_parts(lines)])
-    return _Cue([_line_parts(ln) for ln in lines])
-
-
 def line_count(text: str) -> int:
     """Number of lines with visible text."""
     return sum(1 for ln in _LINEBREAK.split(text) if _TAG.sub("", ln).strip())
 
 
-def rewrap(text: str, n_lines: int) -> str:
-    """Split text into ``n_lines`` lines of balanced length on word boundaries."""
-    words = text.split()
-    if n_lines <= 1 or len(words) < 2:
-        return " ".join(words)
-    n = min(n_lines, len(words))
+@dataclass(eq=False)
+class _Slot:
+    """One translatable segment of one line of one cue."""
+
+    seg: _Segment
+    cue: int
+    start: int  # ms
+    end: int  # ms
+    groupable: bool
+    dash: bool
+    style: tuple
+    out: str = ""
+    final: bool = True
+
+
+@dataclass
+class _Cue:
+    rows: list[list[Part]]
+    slots: list[_Slot] = field(default_factory=list)
+
+    def rebuild(self) -> str:
+        it = iter(self.slots)
+
+        def render(p: Part) -> str:
+            if isinstance(p, str):
+                return p
+            slot = next(it)
+            return p.rebuild(slot.out, final=slot.final)
+
+        return "\\N".join("".join(render(p) for p in row) for row in self.rows)
+
+
+def _apply_html_tag(tag: str, open_tags: list[str]) -> None:
+    m = _HTML_TAG.match(tag)
+    if not m:
+        return
+    name = m.group(2).lower()
+    if m.group(1):
+        for i in range(len(open_tags) - 1, -1, -1):
+            if open_tags[i].split(maxsplit=1)[0].lstrip("<").rstrip(">") == name:
+                del open_tags[i]
+                break
+    elif not tag.rstrip().endswith("/>"):
+        open_tags.append(re.sub(r"\s+", " ", tag.lower()))
+
+
+def _plain(seg: _Segment) -> bool:
+    lead = seg.lead.strip()
+    return (
+        all(c in _DASHES or c.isspace() for c in lead)
+        and not seg.trail.strip()
+        and not _NOT_PLAIN.search(seg.core)
+    )
+
+
+def _prepare_cue(index: int, event: pysubs2.SSAEvent) -> _Cue:
+    cue = _Cue([_line_parts(ln) for ln in _LINEBREAK.split(event.text)])
+    track = sum(1 for row in cue.rows for p in row if isinstance(p, str) and p[:1] in "<{") <= MAX_CUE_TAGS
+    open_tags: list[str] = []
+    lead_ass = ""
+    for r, row in enumerate(cue.rows):
+        segs = [p for p in row if isinstance(p, _Segment)]
+        row_ok = len(segs) == 1
+        dash = False
+        seen = False
+        for p in row:
+            if isinstance(p, _Segment):
+                seen = True
+                dash = dash or any(c in _DASHES for c in p.lead)
+                cue.slots.append(
+                    _Slot(
+                        seg=p,
+                        cue=index,
+                        start=event.start,
+                        end=event.end,
+                        groupable=track and row_ok and _plain(p),
+                        dash=dash,
+                        style=(event.style, event.name, lead_ass, tuple(open_tags)),
+                    )
+                )
+            elif p.startswith("<"):
+                if track:
+                    _apply_html_tag(p, open_tags)
+            elif p.startswith("{"):
+                if r == 0 and not seen and not cue.slots:
+                    lead_ass += p  # positioning/styling of the whole cue
+                else:
+                    row_ok = False  # styling change inside the text
+            elif p.strip() in _DASHES and not seen:
+                dash = True
+            elif p.strip():
+                row_ok = False  # \h, stray symbols, ...
+        if not row_ok:
+            for slot in cue.slots[len(cue.slots) - len(segs) :]:
+                slot.groupable = False
+    return cue
+
+
+def _ends_sentence(text: str, following: str) -> bool:
+    text = _tail(text)
+    if _ELLIPSIS_END.search(text):
+        nxt = following.lstrip()
+        return not (nxt.startswith(("...", "…")) or nxt[:1].islower())
+    if not _SENTENCE_END.search(text):
+        return False
+    if text.endswith("."):
+        word = text.split()[-1][:-1].lower().lstrip("\"'“‘«(")
+        # "Mr." and dotted abbreviations ("U.S.", "e.g.") do not end a sentence; "So am I." does
+        if word in _ABBREVIATIONS or re.fullmatch(r"(?:[^\W\d_]\.)+[^\W\d_]", word):
+            return False
+    return True
+
+
+def _continues(unit: list[_Slot], slot: _Slot, max_gap_ms: float) -> bool:
+    prev = unit[-1]
+    if not (prev.groupable and slot.groupable) or slot.dash:
+        return False
+    if slot.style != prev.style or slot.seg.caps != prev.seg.caps:
+        return False
+    if slot.cue != prev.cue and not -MAX_OVERLAP_MS <= slot.start - prev.end <= max_gap_ms:
+        return False  # long pause, cues out of order, or overlapping cues (two speakers at once)
+    if len({s.cue for s in unit} | {slot.cue}) > MAX_UNIT_CUES:
+        return False
+    if sum(len(s.seg.core) + 1 for s in unit) + len(slot.seg.core) > MAX_UNIT_CHARS:
+        return False
+    return not _ends_sentence(prev.seg.core, slot.seg.core)
+
+
+def group_slots(slots: list[_Slot], max_gap_seconds: float) -> list[list[_Slot]]:
+    units: list[list[_Slot]] = []
+    for slot in slots:
+        if units and _continues(units[-1], slot, max_gap_seconds * 1000):
+            units[-1].append(slot)
+        else:
+            units.append([slot])
+    return units
+
+
+def _words(text: str) -> list[str]:
+    """Words, with stand-alone punctuation (French " ?", "« ") glued to its neighbour."""
+    words: list[str] = []
+    pending = ""
+    for token in text.split():
+        if any(c.isalnum() for c in token):
+            words.append(f"{pending}{token}" if pending else token)
+            pending = ""
+        elif all(c in _OPENING_PUNCT for c in token):
+            pending = f"{pending}{token} "
+        elif words:
+            words[-1] = f"{words[-1]} {token}"
+        else:
+            pending = f"{pending}{token} "
+    if pending:
+        if words:
+            words[-1] = f"{words[-1]} {pending.strip()}"
+        else:
+            words.append(pending.strip())
+    return words
+
+
+def distribute(text: str, weights: list[float]) -> list[str] | None:
+    """Split ``text`` into ``len(weights)`` non-empty pieces on word boundaries.
+
+    Piece lengths follow the weights (the source length of each slot); split points
+    right after punctuation are preferred. Returns None when there are fewer words
+    than pieces."""
+    n = len(weights)
+    words = _words(text)
+    if n == 0 or len(words) < n:
+        return None
+    if n == 1:
+        return [" ".join(words)]
     prefix = [0]
     for w in words:
         prefix.append(prefix[-1] + len(w) + (1 if prefix[-1] else 0))
     total = prefix[-1]
-    lines: list[str] = []
+    weight_sum = sum(max(w, 1.0) for w in weights)
+    bonus = min(12.0, 0.3 * total / n)
+    pieces: list[str] = []
     start = 0
+    cumulative = 0.0
     for k in range(1, n):
-        target = total * k / n
+        cumulative += max(weights[k - 1], 1.0)
+        target = total * cumulative / weight_sum
         lo, hi = start + 1, len(words) - (n - k)
-        split = min(range(lo, hi + 1), key=lambda i: abs(prefix[i] - target))
-        lines.append(" ".join(words[start:split]))
+
+        def cost(i: int, target: float = target) -> float:
+            return abs(prefix[i] - target) - (bonus if _SPLIT_AFTER.search(words[i - 1]) else 0.0)
+
+        split = min(range(lo, hi + 1), key=cost)
+        pieces.append(" ".join(words[start:split]))
         start = split
-    lines.append(" ".join(words[start:]))
-    return "\\N".join(lines)
+    pieces.append(" ".join(words[start:]))
+    return pieces
+
+
+def _unit_query(unit: list[_Slot]) -> str:
+    if len(unit) == 1:
+        return unit[0].seg.query
+    joined = _clean(" ".join(s.seg.core for s in unit))
+    return _sentence_case(joined) if unit[0].seg.caps else joined
 
 
 TranslateFn = Callable[[list[str]], Awaitable[list[str]]]
@@ -381,30 +537,58 @@ class TranslationResult:
     sample: list[str] = field(default_factory=list)
 
 
-async def _translate_cues(cues: list[_Cue], translate: TranslateFn) -> list[str]:
-    unique = list(dict.fromkeys(s.query for cue in cues for s in cue.segments))
+async def _translate_units(units: list[list[_Slot]], translate: TranslateFn) -> list[list[_Slot]]:
+    """Translate units and fill in every slot; returns the units that could not be split back."""
+    queries = [_unit_query(u) for u in units]
+    unique = list(dict.fromkeys(queries))
     translated = await translate(unique) if unique else []
     if len(translated) != len(unique):
         raise SubtitleError("Translation service returned an unexpected number of lines")
     lookup = dict(zip(unique, translated, strict=True))
-    return [cue.rebuild([lookup[s.query] for s in cue.segments]) for cue in cues]
+    failed: list[list[_Slot]] = []
+    for unit, query in zip(units, queries, strict=True):
+        pieces = distribute(lookup[query], [len(s.seg.core) for s in unit]) if len(unit) > 1 else [lookup[query]]
+        if pieces is None:
+            failed.append(unit)
+            continue
+        for i, (slot, piece) in enumerate(zip(unit, pieces, strict=True)):
+            slot.out, slot.final = piece, i == len(unit) - 1
+    return failed
 
 
-async def translate_subtitles(subs: pysubs2.SSAFile, translate: TranslateFn) -> TranslationResult:
+def _singles(units: list[list[_Slot]]) -> list[list[_Slot]]:
+    return [[s] for u in units for s in u]
+
+
+async def translate_subtitles(
+    subs: pysubs2.SSAFile,
+    translate: TranslateFn,
+    *,
+    sentence_grouping: bool = True,
+    max_gap_seconds: float = 2.0,
+) -> TranslationResult:
     """Translate the text of every dialogue event in place. Timing is never touched."""
-    events = [e for e in subs.events if not (e.is_comment or e.is_drawing or not e.text.strip())]
+    events = [e for e in subs.events if not (e.is_comment or _is_drawing(e.text) or not e.text.strip())]
     originals = [e.text for e in events]
-    texts = await _translate_cues([prepare_cue(t) for t in originals], translate)
+    cues = [_prepare_cue(i, e) for i, e in enumerate(events)]
+    slots = [s for cue in cues for s in cue.slots]
+    units = group_slots(slots, max_gap_seconds) if sentence_grouping else [[s] for s in slots]
 
-    # Invariant: every visible source line has a translated line. Joined cues that lost a
-    # line (e.g. a one-word translation) are redone line by line.
-    redo = [i for i, (src, dst) in enumerate(zip(originals, texts, strict=True)) if line_count(src) != line_count(dst)]
-    if redo:
-        fixed = await _translate_cues([prepare_cue(originals[i], join=False) for i in redo], translate)
-        for i, text in zip(redo, fixed, strict=True):
-            if line_count(text) == line_count(originals[i]):
-                texts[i] = text
-            else:
+    failed = await _translate_units(units, translate)
+    if failed:  # too few words to give every line one: translate those lines one by one
+        await _translate_units(_singles(failed), translate)
+    texts = [cue.rebuild() for cue in cues]
+
+    # Invariant: every visible source line keeps a translated line.
+    bad = {i for i, (src, dst) in enumerate(zip(originals, texts, strict=True)) if line_count(src) != line_count(dst)}
+    if bad:
+        redo = [u for u in units if len(u) > 1 and any(s.cue in bad for s in u)]
+        if redo:
+            await _translate_units(_singles(redo), translate)
+            for i in {s.cue for u in redo for s in u}:
+                texts[i] = cues[i].rebuild()
+        for i in bad:
+            if line_count(texts[i]) != line_count(originals[i]):
                 log.warning("Keeping the original text of a cue whose line structure could not be preserved")
                 texts[i] = originals[i]
 
@@ -418,7 +602,7 @@ def sample_text(subs: pysubs2.SSAFile, max_chars: int = 600) -> str:
     out: list[str] = []
     size = 0
     for event in subs.events:
-        if event.is_comment or event.is_drawing:
+        if event.is_comment or _is_drawing(event.text):
             continue
         plain = _LINEBREAK.sub(" ", _TAG.sub("", event.text)).strip()
         if plain:

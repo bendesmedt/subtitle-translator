@@ -283,6 +283,8 @@ async function loadSettings() {
     ST.$("s-maxmb").value = s.max_file_mb;
     ST.$("s-maxfiles").value = s.max_files_per_job;
     ST.$("s-fps").value = s.microdvd_fps;
+    ST.$("s-grouping").checked = s.sentence_grouping;
+    ST.$("s-gap").value = s.max_gap_seconds;
     ST.$("s-idle").value = s.session_idle_hours;
     ST.$("s-abs").value = s.session_absolute_hours;
     ST.$("pw-username").value = s.username;
@@ -322,6 +324,8 @@ ST.$("settings-form").addEventListener("submit", async (event) => {
     max_file_mb: Number(ST.$("s-maxmb").value),
     max_files_per_job: Number(ST.$("s-maxfiles").value),
     microdvd_fps: Number(ST.$("s-fps").value),
+    sentence_grouping: ST.$("s-grouping").checked,
+    max_gap_seconds: Number(ST.$("s-gap").value),
     session_idle_hours: Number(ST.$("s-idle").value),
     session_absolute_hours: Number(ST.$("s-abs").value),
   };

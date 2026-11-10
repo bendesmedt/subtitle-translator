@@ -16,7 +16,7 @@ self-hosted LibreTranslate instance. Deployed with Docker Compose (see README.md
 | `app/security.py` | Argon2id hashing, in-memory `SessionStore`, `LoginRateLimiter`, origin check, `SecurityMiddleware` (security headers, body size limit) |
 | `app/deps.py` | FastAPI dependencies (`require_session`, `require_csrf`) and `apply_settings` |
 | `app/paths.py` | **All** filesystem path handling: `resolve_media_path`, listing, walking. Hides hidden entries and symlinks escaping the media root |
-| `app/subtitles.py` | Format detection, decoding, pysubs2 load/dump, filename language codes, tag protection, `translate_subtitles` |
+| `app/subtitles.py` | Format detection, decoding, pysubs2 load/dump, filename language codes, tag protection, sentence grouping across lines/cues (`group_slots`) and redistribution (`distribute`), `translate_subtitles` |
 | `app/translator.py` | Async LibreTranslate client (batching, retries, `/languages` cache, `/detect`) |
 | `app/jobs.py` | `JobManager` (single asyncio worker, in-memory history) and `write_output` (no-clobber atomic write) |
 | `app/routes/` | API routers: `auth` (login, setup wizard), `files` (browse/scan/search), `jobs`, `settings` |
@@ -35,6 +35,8 @@ self-hosted LibreTranslate instance. Deployed with Docker Compose (see README.md
 - Frontend: no inline scripts/styles (strict CSP). Build DOM with `ST.el(...)` / `textContent`. Never use
   `innerHTML` with data.
 - Job endpoints are `async def` because `JobManager` uses an `asyncio.Queue`, which is not thread-safe.
+- Translation must never change timestamps, cue count or a cue's visible line count, and tags never reach the
+  translator. Sentence grouping must keep the slot-by-slot fallback and the keep-the-original last resort.
 - Translated files are written with `write_output` only. It never overwrites unless `overwrite=True`.
 - The app listens on port 8790 (Dockerfile, compose, README); plain HTTP on the LAN, so `COOKIE_SECURE`
   defaults to false and nothing may assume the host is `localhost`.

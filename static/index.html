@@ -111,6 +111,10 @@
           <label>MicroDVD default FPS <input id="s-fps" type="number" min="1" max="240" step="0.001" required></label>
         </div>
         <div class="row">
+          <label class="check"><input type="checkbox" id="s-grouping"> Translate whole sentences that span lines or cues</label>
+          <label>Max pause within a sentence (seconds) <input id="s-gap" type="number" min="0" max="10" step="0.1" required></label>
+        </div>
+        <div class="row">
           <label>Session idle timeout (hours) <input id="s-idle" type="number" min="0.1" max="720" step="0.1" required></label>
           <label>Session max lifetime (hours) <input id="s-abs" type="number" min="0.1" max="2160" step="0.1" required></label>
         </div>
@@ -120,7 +124,7 @@
 
       <form id="password-form" autocomplete="off">
         <h2>Change password</h2>
-        <input type="text" autocomplete="username" id="pw-username" class="hidden" tabindex="-1" aria-hidden="true">
+        <label class="hidden">Username <input type="text" autocomplete="username" id="pw-username" tabindex="-1" readonly></label>
         <label>Current password <input id="pw-current" type="password" required maxlength="256" autocomplete="current-password"></label>
         <label>New password (min. 12) <input id="pw-new" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
         <label>Confirm new password <input id="pw-new2" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>

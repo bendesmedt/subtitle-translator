@@ -46,6 +46,8 @@ class JobContext:
     client: LibreTranslateClient
     max_file_bytes: int
     microdvd_fps: float
+    sentence_grouping: bool = True
+    max_gap_seconds: float = 2.0
 
 
 @dataclass
@@ -269,7 +271,9 @@ class JobManager:
                 texts, source, job.target, progress=progress, cancelled=lambda: job.cancel_requested
             )
 
-        result = await translate_subtitles(subs, translate)
+        result = await translate_subtitles(
+            subs, translate, sentence_grouping=ctx.sentence_grouping, max_gap_seconds=ctx.max_gap_seconds
+        )
         if job.cancel_requested:
             raise TranslationCancelled
         payload = dump_subtitles(subs, fmt)

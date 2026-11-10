@@ -85,6 +85,8 @@ def create_app(env: EnvSettings | None = None) -> FastAPI:
             client=state.client,
             max_file_bytes=s.max_file_bytes,
             microdvd_fps=s.microdvd_fps,
+            sentence_grouping=s.sentence_grouping,
+            max_gap_seconds=s.max_gap_seconds,
         )
 
     state.jobs = JobManager(job_context)

@@ -197,6 +197,11 @@ def test_settings_roundtrip(authed, lt):
     resp = authed.put("/api/settings", json=s)
     assert resp.status_code == 200, resp.text
     assert resp.json()["api_key_set"] is True and "secret-key" not in resp.text
+    assert s["sentence_grouping"] is True and s["max_gap_seconds"] == 2.0
+    s.update({"sentence_grouping": False, "max_gap_seconds": 3.5})
+    assert authed.put("/api/settings", json=s).json()["max_gap_seconds"] == 3.5
+    assert authed.get("/api/settings").json()["sentence_grouping"] is False
+    assert authed.put("/api/settings", json={**s, "max_gap_seconds": 60}).status_code == 422
     s.pop("libretranslate_api_key")
     s["media_root"] = "../"
     assert authed.put("/api/settings", json=s).status_code == 400

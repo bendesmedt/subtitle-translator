@@ -77,6 +77,8 @@ class Settings(BaseModel):
     max_file_mb: float = Field(default=5.0, gt=0, le=50)
     max_files_per_job: int = Field(default=500, ge=1, le=5000)
     microdvd_fps: float = Field(default=23.976, gt=1, le=240)
+    sentence_grouping: bool = True
+    max_gap_seconds: float = Field(default=2.0, ge=0, le=10)
     session_idle_hours: float = Field(default=12, gt=0, le=24 * 30)
     session_absolute_hours: float = Field(default=72, gt=0, le=24 * 90)
 

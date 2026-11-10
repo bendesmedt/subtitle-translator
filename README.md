@@ -214,8 +214,14 @@ logged in.
 - Output files are written as UTF-8 with a BOM, so players and TVs that assume a legacy encoding still show accents correctly.
 - Formatting tags (`<i>`, `<font color>`, `{\an8}`, …) are never sent to LibreTranslate. Text on either side of a tag is
   translated as a separate piece, so a tag in the middle of a sentence can make that sentence's translation less fluent.
-  Lines with their own colour or tag, dialogue dashes and sound effects are translated line by line. All-caps sound cues
-  are translated in sentence case and then converted back to capitals.
+- Sentences that run over several lines or cues are translated as one sentence, then split back over the original lines
+  on word boundaries (in proportion to the source length, preferring a split after a comma). Timestamps and the number
+  of lines per cue never change, but a word can end up one cue earlier or later than in the source, because languages
+  order words differently. A sentence is never joined across a pause longer than *Max pause within a sentence*
+  (Settings, default 2 s), and never across more than 4 cues. Turn it off under *Settings* to translate
+  line by line.
+- Dialogue lines starting with a dash, lines with their own colour or tag, and sound effects in brackets or with ♪ are
+  always translated on their own. All-caps sound cues are translated in sentence case and then converted back to capitals.
 - Translation quality depends on the LibreTranslate model. Short sound-effect cues in particular can come out literal or odd.
 
 ## Development

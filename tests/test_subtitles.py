@@ -11,8 +11,6 @@ from app.subtitles import (
     load_nonempty,
     load_subtitles,
     output_path,
-    prepare_cue,
-    rewrap,
     sample_text,
     translate_subtitles,
 )
@@ -106,38 +104,46 @@ def test_output_path(name, out):
     assert output_path(Path("/m") / name, "fr") == Path("/m") / out
 
 
-def test_rewrap_balanced():
-    assert rewrap("one two three four", 2) == "one two\\Nthree four"
-    assert rewrap("single", 3) == "single"
-    assert rewrap("a b c", 1) == "a b c"
-    assert rewrap("a b c", 3).count("\\N") == 2
+async def _translate_one(text: str, translations: dict[str, str]) -> tuple[str, list[str]]:
+    sent: list[str] = []
+
+    async def translate(texts: list[str]) -> list[str]:
+        sent.extend(texts)
+        return [translations.get(t, t) for t in texts]
+
+    subs = load_subtitles(f"1\n00:00:01,000 --> 00:00:02,000\n{text}\n".encode(), "srt", 25)
+    await translate_subtitles(subs, translate)
+    return subs.events[0].text, sent
 
 
-def test_tags_never_sent_to_translator():
-    cue = prepare_cue("{\\an8}<i>Hello</i> big\\Nworld")
-    queries = [seg.query for seg in cue.segments]
-    assert queries == ["Hello", "big", "world"]
-    rebuilt = cue.rebuild(["Bonjour", "grand", "monde"])
-    assert rebuilt == "{\\an8}<i>Bonjour</i> grand\\Nmonde"
+async def test_tags_never_sent_to_translator():
+    out, sent = await _translate_one(
+        "{\\an8}<i>Hello</i> big\nworld", {"Hello": "Bonjour", "big": "grand", "world": "monde"}
+    )
+    assert sorted(sent) == ["Hello", "big", "world"]
+    assert out == "{\\an8}<i>Bonjour</i> grand\\Nmonde"
 
 
-def test_mid_line_tags_restored_exactly():
-    cue = prepare_cue("A <b>bold</b> word")
-    assert [seg.query for seg in cue.segments] == ["A", "bold", "word"]
-    assert cue.rebuild(["Un", "gras", "mot"]) == "Un <b>gras</b> mot"
+async def test_mid_line_tags_restored_exactly():
+    out, sent = await _translate_one("A <b>bold</b> word", {"A": "Un", "bold": "gras", "word": "mot"})
+    assert sorted(sent) == ["A", "bold", "word"]
+    assert out == "Un <b>gras</b> mot"
 
 
-def test_dialogue_lines_translated_separately():
-    cue = prepare_cue("- Are you coming?\\N- Yes.")
-    assert [seg.query for seg in cue.segments] == ["Are you coming?", "Yes."]
-    assert cue.rebuild(["Tu viens ?", "Oui."]) == "- Tu viens ?\\N- Oui."
+async def test_dialogue_lines_translated_separately():
+    out, sent = await _translate_one("- Are you coming?\n- Yes.", {"Are you coming?": "Tu viens ?", "Yes.": "Oui."})
+    assert sent == ["Are you coming?", "Yes."]
+    assert out == "- Tu viens ?\\N- Oui."
 
 
-def test_continuation_lines_joined_and_rewrapped():
-    cue = prepare_cue("<i>I never thought that we\\Nwould meet again here</i>")
-    assert [seg.query for seg in cue.segments] == ["I never thought that we would meet again here"]
-    out = cue.rebuild(["Je n'ai jamais pensé qu'on se reverrait ici"])
+async def test_continuation_lines_joined_and_rewrapped():
+    out, sent = await _translate_one(
+        "<i>I never thought that we\nwould meet again here</i>",
+        {"I never thought that we would meet again here": "Je n'ai jamais pensé qu'on se reverrait ici"},
+    )
+    assert sent == ["I never thought that we would meet again here"]
     assert out.startswith("<i>") and out.endswith("</i>") and out.count("\\N") == 1
+    assert out.replace("\\N", " ") == "<i>Je n'ai jamais pensé qu'on se reverrait ici</i>"
 
 
 @pytest.mark.parametrize(("fmt", "text"), [("srt", SRT), ("vtt", VTT), ("ass", ASS), ("microdvd", MICRODVD)])
